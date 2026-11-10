@@ -1,0 +1,10 @@
+{
+  "name": "Order Up! — Café Talk",
+  "description": "A warm and encouraging English speaking-practice web app for Korean middle school students to practice ordering drinks at a café with barista Mia.",
+  "requestFramePermissions": [
+    "microphone"
+  ],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}

@@ -1,0 +1,96 @@
+@import "tailwindcss";
+
+@layer base {
+  :root {
+    --cafe-bg: #FFFDF9;
+    --cafe-surface: #FFFFFF;
+    --cafe-surface-subtle: #FFF8F0;
+    --cafe-border: #FBE6D4;
+    --cafe-text-main: #4A3831;
+    --cafe-text-muted: #7E6A62;
+    --cafe-text-soft: #A8958E;
+    --cafe-peach: #FA925C;
+    --cafe-honey: #FDBA74;
+    --cafe-sage: #84A98C;
+  }
+
+  html {
+    font-size: clamp(16px, 1rem + 0.1vw, 18px);
+    overflow-x: hidden;
+    scroll-behavior: smooth;
+  }
+
+  body {
+    font-family: 'Nunito', system-ui, -apple-system, sans-serif;
+    background: radial-gradient(circle at 50% 0%, #FFF8EF 0%, #FFF3E6 50%, #FDF0E2 100%);
+    color: var(--cafe-text-main);
+    min-height: 100vh;
+    line-height: 1.6;
+    word-break: keep-all;
+    overflow-wrap: break-word;
+    overflow-x: hidden;
+    -webkit-tap-highlight-color: transparent;
+  }
+
+  h1, h2, h3, .font-heading {
+    font-family: 'Fredoka', 'Nunito', sans-serif;
+    text-align: center;
+    line-height: 1.35;
+    word-break: keep-all;
+    overflow-wrap: break-word;
+  }
+
+  p, li, span, div {
+    word-break: keep-all;
+    overflow-wrap: break-word;
+  }
+}
+
+/* Fluid responsive type helpers */
+.text-fluid-title {
+  font-size: clamp(1.75rem, 5vw + 0.5rem, 2.25rem);
+  line-height: 1.25;
+}
+
+.text-fluid-target {
+  font-size: clamp(1.35rem, 4.5vw + 0.4rem, 1.85rem);
+  line-height: 1.35;
+}
+
+.text-fluid-body {
+  font-size: clamp(1rem, 1vw + 0.85rem, 1.125rem);
+  line-height: 1.6;
+}
+
+/* Gentle micro-animations */
+@keyframes soft-pulse-ring {
+  0% {
+    transform: scale(0.96);
+    opacity: 0.7;
+  }
+  50% {
+    transform: scale(1.15);
+    opacity: 0.25;
+  }
+  100% {
+    transform: scale(0.96);
+    opacity: 0.7;
+  }
+}
+
+@keyframes gentle-float {
+  0%, 100% {
+    transform: translateY(0px);
+  }
+  50% {
+    transform: translateY(-4px);
+  }
+}
+
+.animate-soft-ring {
+  animation: soft-pulse-ring 2.4s ease-in-out infinite;
+}
+
+.animate-float-slow {
+  animation: gentle-float 4s ease-in-out infinite;
+}
