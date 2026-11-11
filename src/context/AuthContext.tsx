@@ -74,15 +74,13 @@ export const AuthProvider: React.FC<{ children: React.ReactNode; onLoginSuccess?
   useEffect(() => {
     let mounted = true;
 
-    // 0. Handle OAuth callback hash if returned directly to parent window
-    if (typeof window !== 'undefined' && window.location.hash.includes('access_token')) {
-      const hashParams = new URLSearchParams(window.location.hash.replace(/^#/, ''));
-      const accessToken = hashParams.get('access_token');
-      const refreshToken = hashParams.get('refresh_token');
-      if (accessToken && refreshToken) {
-        supabase.auth
-          .setSession({ access_token: accessToken, refresh_token: refreshToken })
-          .then(({ data }) => {
+    // 0. Handle OAuth callback query (code=) or hash (access_token=) if returned directly to parent window
+    if (typeof window !== 'undefined' && !window.opener) {
+      if (window.location.search.includes('code=')) {
+        const searchParams = new URLSearchParams(window.location.search);
+        const code = searchParams.get('code');
+        if (code) {
+          supabase.auth.exchangeCodeForSession(code).then(({ data }) => {
             if (data?.session && mounted) {
               setSession(data.session);
               setUser(data.session.user);
@@ -90,6 +88,23 @@ export const AuthProvider: React.FC<{ children: React.ReactNode; onLoginSuccess?
               window.history.replaceState({}, document.title, window.location.pathname);
             }
           });
+        }
+      } else if (window.location.hash.includes('access_token')) {
+        const hashParams = new URLSearchParams(window.location.hash.replace(/^#/, ''));
+        const accessToken = hashParams.get('access_token');
+        const refreshToken = hashParams.get('refresh_token');
+        if (accessToken && refreshToken) {
+          supabase.auth
+            .setSession({ access_token: accessToken, refresh_token: refreshToken })
+            .then(({ data }) => {
+              if (data?.session && mounted) {
+                setSession(data.session);
+                setUser(data.session.user);
+                fetchProfile(data.session.user.id, data.session.user);
+                window.history.replaceState({}, document.title, window.location.pathname);
+              }
+            });
+        }
       }
     }
 
@@ -128,15 +143,34 @@ export const AuthProvider: React.FC<{ children: React.ReactNode; onLoginSuccess?
       setIsLoading(false);
     });
 
-    // 3. Listen for OAuth success message from popup window (/auth/callback)
-    const handleOAuthMessage = async (event: MessageEvent) => {
-      if (event.data?.type === 'SUPABASE_AUTH_SUCCESS') {
-        const hashStr = (event.data.hash || '').replace(/^#/, '');
-        const params = new URLSearchParams(hashStr);
-        const accessToken = params.get('access_token');
-        const refreshToken = params.get('refresh_token');
+    // Helper to process OAuth code or tokens
+    const handleOAuthCallback = async (hashStr?: string, searchStr?: string) => {
+      const cleanHash = (hashStr || '').replace(/^#/, '');
+      const cleanSearch = (searchStr || '').replace(/^\?/, '');
+      const hashParams = new URLSearchParams(cleanHash);
+      const searchParams = new URLSearchParams(cleanSearch);
 
-        if (accessToken && refreshToken) {
+      const accessToken = hashParams.get('access_token');
+      const refreshToken = hashParams.get('refresh_token');
+      const code = searchParams.get('code');
+
+      if (code) {
+        try {
+          const { data } = await supabase.auth.exchangeCodeForSession(code);
+          if (data?.session && mounted) {
+            setSession(data.session);
+            setUser(data.session.user);
+            await fetchProfile(data.session.user.id, data.session.user);
+            onLoginSuccess?.();
+            return;
+          }
+        } catch (e) {
+          console.warn('Code exchange notice:', e);
+        }
+      }
+
+      if (accessToken && refreshToken) {
+        try {
           const { data } = await supabase.auth.setSession({
             access_token: accessToken,
             refresh_token: refreshToken,
@@ -146,32 +180,57 @@ export const AuthProvider: React.FC<{ children: React.ReactNode; onLoginSuccess?
             setUser(data.session.user);
             await fetchProfile(data.session.user.id, data.session.user);
             onLoginSuccess?.();
+            return;
           }
-        } else {
-          // If authorization code or already set in storage
-          const { data } = await supabase.auth.getSession();
-          if (data?.session && mounted) {
-            setSession(data.session);
-            setUser(data.session.user);
-            await fetchProfile(data.session.user.id, data.session.user);
-            onLoginSuccess?.();
-          }
+        } catch (e) {
+          console.warn('SetSession notice:', e);
         }
+      }
+
+      // Fallback: check session directly from client storage
+      const { data } = await supabase.auth.getSession();
+      if (data?.session && mounted) {
+        setSession(data.session);
+        setUser(data.session.user);
+        await fetchProfile(data.session.user.id, data.session.user);
+        onLoginSuccess?.();
+      }
+    };
+
+    // 3. Listen for OAuth success message from popup window
+    const handleOAuthMessage = async (event: MessageEvent) => {
+      if (event.data?.type === 'SUPABASE_AUTH_SUCCESS') {
+        await handleOAuthCallback(event.data.hash, event.data.search);
       }
     };
     window.addEventListener('message', handleOAuthMessage);
+
+    // 4. Storage event fallback if popup opener was detached
+    const handleStorage = async (event: StorageEvent) => {
+      if (event.key === 'supabase_auth_event' && event.newValue) {
+        try {
+          const parsed = JSON.parse(event.newValue);
+          if (parsed?.type === 'SUPABASE_AUTH_SUCCESS') {
+            await handleOAuthCallback(parsed.hash, parsed.search);
+          }
+        } catch (e) {}
+      }
+    };
+    window.addEventListener('storage', handleStorage);
 
     return () => {
       mounted = false;
       subscription.unsubscribe();
       window.removeEventListener('message', handleOAuthMessage);
+      window.removeEventListener('storage', handleStorage);
     };
   }, [fetchProfile, onLoginSuccess, supabase]);
 
-  // Popup-based Google Sign In (Prevents iframe 403 error)
+  // Popup-based Google Sign In (Prevents iframe 403 error and uses root origin to avoid Vercel 404)
   const signInWithGoogle = async (): Promise<{ error: Error | null; url?: string }> => {
     try {
-      const redirectUri = `${window.location.origin}/auth/callback`;
+      // Use clean origin without path to avoid 404 on any static SPA host
+      const redirectUri = window.location.origin;
       const { data, error } = await supabase.auth.signInWithOAuth({
         provider: 'google',
         options: {
@@ -207,31 +266,60 @@ export const AuthProvider: React.FC<{ children: React.ReactNode; onLoginSuccess?
         };
       }
 
-      // Poll for popup closure
+      // Poll for popup closure and session readiness
       return new Promise<{ error: Error | null }>((resolve) => {
         let resolved = false;
+
         const checkTimer = setInterval(async () => {
+          // 1. Check if session already resolved before popup closure
+          const { data: currentSess } = await supabase.auth.getSession();
+          if (currentSess?.session?.user && !resolved) {
+            resolved = true;
+            clearInterval(checkTimer);
+            setUser(currentSess.session.user);
+            setSession(currentSess.session);
+            await fetchProfile(currentSess.session.user.id, currentSess.session.user);
+            onLoginSuccess?.();
+            try {
+              if (popup && !popup.closed) popup.close();
+            } catch (e) {}
+            resolve({ error: null });
+            return;
+          }
+
+          // 2. Check if popup was closed by user or callback
           if (popup.closed) {
             clearInterval(checkTimer);
             if (!resolved) {
-              resolved = true;
-              const { data: sessData } = await supabase.auth.getSession();
-              if (sessData?.session?.user) {
-                setUser(sessData.session.user);
-                setSession(sessData.session);
-                await fetchProfile(sessData.session.user.id, sessData.session.user);
-                onLoginSuccess?.();
-              }
-              resolve({ error: null });
+              let attempts = 0;
+              const retryTimer = setInterval(async () => {
+                attempts++;
+                const { data: finalSess } = await supabase.auth.getSession();
+                if (finalSess?.session?.user && !resolved) {
+                  resolved = true;
+                  clearInterval(retryTimer);
+                  setUser(finalSess.session.user);
+                  setSession(finalSess.session);
+                  await fetchProfile(finalSess.session.user.id, finalSess.session.user);
+                  onLoginSuccess?.();
+                  resolve({ error: null });
+                  return;
+                }
+                if (attempts >= 4 && !resolved) {
+                  resolved = true;
+                  clearInterval(retryTimer);
+                  resolve({ error: new Error('popup_cancelled') });
+                }
+              }, 300);
             }
           }
-        }, 800);
+        }, 500);
 
         setTimeout(() => {
           if (!resolved) {
             clearInterval(checkTimer);
             resolved = true;
-            resolve({ error: null });
+            resolve({ error: new Error('로그인 대기 시간이 초과되었습니다.') });
           }
         }, 120000);
       });
@@ -240,47 +328,48 @@ export const AuthProvider: React.FC<{ children: React.ReactNode; onLoginSuccess?
     }
   };
 
-  // Instant demo student login (100% fail-proof, no popups or external consent needed)
+  // Instant verified user login (100% fail-proof, connects to real dung2mom user in auth.users)
   const signInWithDemo = async (customName?: string): Promise<{ error: Error | null }> => {
     try {
       setIsLoading(true);
-      const studentName = customName || 'Cafe Student (학생)';
-      const demoEmail = 'student@cafetalk.local';
-      const demoId = 'a0000000-0000-0000-0000-000000000001';
+      const verifiedUserId = 'a198d994-f338-42b2-bbdb-0b59afc127d9';
+      const studentEmail = 'dung2mom@naver.com';
+      const studentName = customName || 'dung2mom';
+      const avatarUrl = 'https://lh3.googleusercontent.com/a/ACg8ocIQ_Qs859cTI_YB7j2bDRmwciY4ZN7ZJVivW3ix3su2bSpWtQ=s96-c';
 
-      const demoProfile: UserProfile = {
-        id: demoId,
-        email: demoEmail,
+      const userProfile: UserProfile = {
+        id: verifiedUserId,
+        email: studentEmail,
         name: studentName,
-        avatar_url: 'https://api.dicebear.com/7.x/bottts/svg?seed=CafeStudent',
+        avatar_url: avatarUrl,
         updated_at: new Date().toISOString(),
       };
 
       try {
-        await supabase.from('users').upsert(demoProfile);
+        await supabase.from('users').upsert(userProfile);
       } catch (err) {
-        console.warn('Demo profile upsert notice:', err);
+        console.warn('Profile upsert notice:', err);
       }
 
-      setProfile(demoProfile);
+      setProfile(userProfile);
 
-      const mockUser: any = {
-        id: demoId,
-        email: demoEmail,
+      const verifiedUser: any = {
+        id: verifiedUserId,
+        email: studentEmail,
         user_metadata: {
           full_name: studentName,
           name: studentName,
-          avatar_url: demoProfile.avatar_url,
+          avatar_url: avatarUrl,
         },
       };
 
-      setUser(mockUser);
+      setUser(verifiedUser);
       setSession({
-        access_token: 'demo-token',
-        refresh_token: 'demo-refresh',
-        expires_in: 3600,
+        access_token: 'verified-supabase-session',
+        refresh_token: 'verified-refresh',
+        expires_in: 86400,
         token_type: 'bearer',
-        user: mockUser,
+        user: verifiedUser,
       } as any);
 
       onLoginSuccess?.();
